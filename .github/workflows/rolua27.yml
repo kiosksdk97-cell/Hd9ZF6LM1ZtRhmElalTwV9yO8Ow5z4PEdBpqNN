@@ -1,0 +1,85 @@
+# Tên của quy trình công việc, sẽ hiển thị trong tab Actions của kho lưu trữ GitHub
+name: rolua27
+
+# Xác định thời điểm quy trình công việc sẽ chạy
+on:
+  # Cho phép bạn chạy quy trình công việc này theo cách thủ công từ tab Actions
+  workflow_dispatch:
+
+# Định nghĩa các công việc sẽ chạy trong quy trình
+jobs:
+  nightmare:
+    # Sử dụng windows-latest (windows-2025-vs2026/windows-latest/windows-2022/windows-2019)
+    runs-on: windows-2025-vs2026
+
+    steps:
+    # Bước 1: Lấy mã nguồn
+    - name: Check out repository
+      uses: actions/checkout@v4
+
+    # Bước 2: Kích hoạt Remote Desktop (RDP) và đặt mật khẩu người dùng
+    - name: Enable RDP and Set User Password
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "P@ssw0rd123!" -Force)
+
+    # Bước 3: Cài đặt và cấu hình Chrome Remote Desktop (BẢN CẢI TIẾN)
+    - name: Setup Chrome Remote Desktop
+      env:
+        CRD_AUTH_CODE: ${{ secrets.CRD_AUTH_CODE }}
+        CRD_PIN: ${{ secrets.CRD_PIN }}
+      shell: powershell
+      run: |
+        # 1. Tải xuống bộ cài MSI
+        Write-Host "Đang tải xuống Chrome Remote Desktop..."
+        Invoke-WebRequest -Uri https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi -OutFile crd.msi
+        
+        # 2. Cài đặt và bắt buộc phải đợi cho đến khi xong hoàn toàn
+        Write-Host "Đang cài đặt (vui lòng đợi)..."
+        Start-Process msiexec.exe -ArgumentList "/i crd.msi /quiet /norestart" -Wait
+        
+        # 3. Tìm đường dẫn thực tế của file thực thi (Khắc phục lỗi không tìm thấy file trên Win 11)
+        # Quét thư mục Google để tìm file remoting_start_host.exe mới nhất
+        $hostExe = Get-ChildItem -Path "C:\Program Files (x86)\Google\Chrome Remote Desktop" -Recurse -Filter "remoting_start_host.exe" | 
+                   Sort-Object LastWriteTime -Descending | 
+                   Select-Object -First 1 -ExpandProperty FullName
+
+        if (-not $hostExe) {
+            Write-Error "LỖI: Không tìm thấy file remoting_start_host.exe sau khi cài đặt."
+            exit 1
+        }
+        Write-Host "Đã tìm thấy file tại: $hostExe"
+
+        # 4. Chuẩn bị các đối số cấu hình
+        $Arguments = @(
+            "--code=${env:CRD_AUTH_CODE}",
+            "--redirect-url=https://remotedesktop.google.com/_/oauthredirect",
+            "--name=${env:COMPUTERNAME}",
+            "--pin=${env:CRD_PIN}"
+        )
+        
+        # 5. Thực thi cấu hình và kiểm tra kết quả
+        Write-Host "Đang kích hoạt Host..."
+        $Process = Start-Process -FilePath $hostExe -ArgumentList $Arguments -Wait -PassThru
+        
+        if ($Process.ExitCode -ne 0) {
+            Write-Error "Chrome Remote Desktop setup failed with exit code $($Process.ExitCode)."
+            exit $Process.ExitCode
+        }
+        Write-Host "Chrome Remote Desktop đã được cấu hình thành công."
+
+    # Bước 4: Tải xuống và khởi động Playit Tunnel
+    - name: Download and Start Playit Tunnel
+      env:
+        PLAYIT_AUTH_KEY: ${{ secrets.PL }}
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/playit-cloud/playit-agent/releases/download/v0.15.26/playit-windows-x86_64-signed.exe" -OutFile "$env:USERPROFILE\playit.exe"
+        Start-Sleep -Seconds 5
+        Start-Process -FilePath "$env:USERPROFILE\playit.exe" -ArgumentList "--secret $env:PLAYIT_AUTH_KEY" -NoNewWindow
+        Write-Host "Playit tunnel has been started."
+        
+    # Bước 5: Giữ cho máy ảo chạy (Khoảng 5.3 giờ)
+    - name: Keep Runner Alive
+      run: Start-Sleep -Seconds 20760
